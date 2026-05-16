@@ -259,6 +259,46 @@ impl ReduceSum<'_> {
                         .iter()
                         .map(|(u, _)| u)
                         .product::<usize>();
+
+                    // Fast path: route f32 / f64 contiguous last-dim sum
+                    // through the ndarray fork's SIMD-tiered reductions
+                    // (AVX-512 / AVX2 / NEON / scalar dispatch). Other
+                    // dtypes fall through to candle's per-arch
+                    // `T::vec_reduce_sum`.
+                    #[cfg(feature = "ndarray-simd")]
+                    {
+                        if let Some(src_f32) =
+                            crate::cpu::ndarray_dispatch::try_as_f32_slice(src)
+                        {
+                            let dst_f32 = crate::cpu::ndarray_dispatch::try_as_f32_slice_mut(
+                                dst.as_mut_slice(),
+                            )
+                            .expect("matched T==f32");
+                            for (dst_i, dst_v) in dst_f32.iter_mut().enumerate() {
+                                let src_i = dst_i * reduce_sz;
+                                *dst_v = crate::cpu::ndarray_dispatch::sum_f32(
+                                    &src_f32[src_i..src_i + reduce_sz],
+                                );
+                            }
+                            return Ok(dst);
+                        }
+                        if let Some(src_f64) =
+                            crate::cpu::ndarray_dispatch::try_as_f64_slice(src)
+                        {
+                            let dst_f64 = crate::cpu::ndarray_dispatch::try_as_f64_slice_mut(
+                                dst.as_mut_slice(),
+                            )
+                            .expect("matched T==f64");
+                            for (dst_i, dst_v) in dst_f64.iter_mut().enumerate() {
+                                let src_i = dst_i * reduce_sz;
+                                *dst_v = crate::cpu::ndarray_dispatch::sum_f64(
+                                    &src_f64[src_i..src_i + reduce_sz],
+                                );
+                            }
+                            return Ok(dst);
+                        }
+                    }
+
                     for (dst_i, dst_v) in dst.iter_mut().enumerate() {
                         let src_i = dst_i * reduce_sz;
                         unsafe {
@@ -1421,32 +1461,79 @@ impl Map2 for MatMul {
         } else {
             (b, m, n, k)
         };
-        for step in 0..b {
-            let lhs_p = &lhs[step * a_skip..];
-            let rhs_p = &rhs[step * b_skip..];
-            let dst_p = &mut dst[step * c_skip..];
-            unsafe {
-                gemm(
-                    /* m: usize = */ m,
-                    /* n: usize = */ n,
-                    /* k: usize = */ k,
-                    /* dst: *mut T = */ dst_p.as_mut_ptr(),
-                    /* dst_cs: isize = */ dst_cs as isize,
-                    /* dst_rs: isize = */ dst_rs as isize,
-                    /* read_dst: bool = */ false,
-                    /* lhs: *const T = */ lhs_p.as_ptr(),
-                    /* lhs_cs: isize = */ lhs_cs as isize,
-                    /* lhs_rs: isize = */ lhs_rs as isize,
-                    /* rhs: *const T = */ rhs_p.as_ptr(),
-                    /* rhs_cs: isize = */ rhs_cs as isize,
-                    /* rhs_rs: isize = */ rhs_rs as isize,
-                    /* alpha: T = */ T::zero(),
-                    /* beta: T = */ T::one(),
-                    /* conj_dst: bool = */ false,
-                    /* conj_lhs: bool = */ false,
-                    /* conj_rhs: bool = */ false,
-                    parallelism,
-                )
+
+        // Fast path: route row-major contiguous f32 GEMM through the
+        // AdaWorldAPI/ndarray fork's AMX → AVX-512 → AVX2 → NEON
+        // dispatch (`crate::cpu::ndarray_dispatch::matmul_f32`). The
+        // fork's `hpc::amx_matmul::matmul_f32` uses Intel Sapphire
+        // Rapids+ AMX BF16 tile instructions on Linux x86_64 when
+        // available; otherwise falls through to the pure-Rust BLAS L3
+        // (`linalg::general_mat_mul`) which itself dispatches via the
+        // tier-detected `simd::F32x16` lanes. The gemm crate path
+        // remains the fallback for f64 / f16 and for non-contiguous
+        // strides where ndarray's shape constructor would fail.
+        #[cfg(feature = "ndarray-simd")]
+        let used_ndarray_simd = if T::DTYPE == DType::F32
+            && lhs_rs == k
+            && lhs_cs == 1
+            && rhs_rs == n
+            && rhs_cs == 1
+            && dst_rs == n
+            && dst_cs == 1
+        {
+            let mut ok = true;
+            for step in 0..b {
+                let lhs_p = &lhs[step * a_skip..step * a_skip + m * k];
+                let rhs_p = &rhs[step * b_skip..step * b_skip + k * n];
+                let dst_p = &mut dst[step * c_skip..step * c_skip + m * n];
+                let lhs_f32 = crate::cpu::ndarray_dispatch::try_as_f32_slice(lhs_p)
+                    .expect("DTYPE==F32 guarantees slice cast");
+                let rhs_f32 = crate::cpu::ndarray_dispatch::try_as_f32_slice(rhs_p)
+                    .expect("DTYPE==F32 guarantees slice cast");
+                let dst_f32 = crate::cpu::ndarray_dispatch::try_as_f32_slice_mut(dst_p)
+                    .expect("DTYPE==F32 guarantees slice cast");
+                if crate::cpu::ndarray_dispatch::matmul_f32(lhs_f32, rhs_f32, dst_f32, m, n, k)
+                    .is_err()
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            ok
+        } else {
+            false
+        };
+        #[cfg(not(feature = "ndarray-simd"))]
+        let used_ndarray_simd = false;
+
+        if !used_ndarray_simd {
+            for step in 0..b {
+                let lhs_p = &lhs[step * a_skip..];
+                let rhs_p = &rhs[step * b_skip..];
+                let dst_p = &mut dst[step * c_skip..];
+                unsafe {
+                    gemm(
+                        /* m: usize = */ m,
+                        /* n: usize = */ n,
+                        /* k: usize = */ k,
+                        /* dst: *mut T = */ dst_p.as_mut_ptr(),
+                        /* dst_cs: isize = */ dst_cs as isize,
+                        /* dst_rs: isize = */ dst_rs as isize,
+                        /* read_dst: bool = */ false,
+                        /* lhs: *const T = */ lhs_p.as_ptr(),
+                        /* lhs_cs: isize = */ lhs_cs as isize,
+                        /* lhs_rs: isize = */ lhs_rs as isize,
+                        /* rhs: *const T = */ rhs_p.as_ptr(),
+                        /* rhs_cs: isize = */ rhs_cs as isize,
+                        /* rhs_rs: isize = */ rhs_rs as isize,
+                        /* alpha: T = */ T::zero(),
+                        /* beta: T = */ T::one(),
+                        /* conj_dst: bool = */ false,
+                        /* conj_lhs: bool = */ false,
+                        /* conj_rhs: bool = */ false,
+                        parallelism,
+                    )
+                }
             }
         }
         Ok(dst)

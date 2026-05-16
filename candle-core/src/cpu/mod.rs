@@ -3,6 +3,9 @@
 pub mod erf;
 pub mod kernels;
 
+#[cfg(feature = "ndarray-simd")]
+pub mod ndarray_dispatch;
+
 #[allow(unused)]
 trait Cpu<const ARR: usize> {
     type Unit;

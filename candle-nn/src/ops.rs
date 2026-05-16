@@ -316,6 +316,24 @@ impl candle::CustomOp1 for SoftmaxLastDim {
             Ok((storage, Shape::from_dims(dims)))
         }
 
+        // Fast path: route contiguous F32 last-dim softmax through the
+        // ndarray fork's `hpc::activations::softmax_f32` (SIMD-dispatched
+        // exp + reduce). Other dtypes (f16/bf16/f64) and non-contiguous
+        // layouts still take the generic per-chunk loop above.
+        #[cfg(feature = "ndarray-simd")]
+        if let CpuStorage::F32(slice) = storage {
+            if let Some((o1, o2)) = layout.contiguous_offsets() {
+                let src = &slice[o1..o2];
+                let el_count = layout.shape().elem_count();
+                let dims = layout.shape().dims();
+                let dim_m1 = dims[dims.len() - 1];
+                let mut dst = vec![0f32; el_count];
+                candle::cpu::ndarray_dispatch::softmax_f32_last_dim(src, &mut dst, dim_m1);
+                let storage = candle::WithDType::to_cpu_storage_owned(dst);
+                return Ok((storage, Shape::from_dims(dims)));
+            }
+        }
+
         match storage {
             CpuStorage::BF16(slice) => softmax::<half::bf16>(slice, layout),
             CpuStorage::F16(slice) => softmax::<half::f16>(slice, layout),

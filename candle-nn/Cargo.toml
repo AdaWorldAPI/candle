@@ -37,6 +37,10 @@ cuda = ["candle/cuda"]
 cudnn = ["candle/cudnn"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]
 metal = ["candle/metal", "dep:candle-metal-kernels", "dep:objc2-metal"]
+# Route softmax / activations / reductions through the AdaWorldAPI
+# ndarray fork's `hpc::*` SIMD kernels via candle-core's
+# `cpu::ndarray_dispatch` shim.
+ndarray-simd = ["candle/ndarray-simd"]
 
 [[bench]]
 name = "bench_main"

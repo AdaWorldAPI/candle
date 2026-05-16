@@ -24,6 +24,7 @@ intel-mkl-src = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 libm = { workspace = true }
 memmap2 = { workspace = true }
+ndarray = { workspace = true, optional = true }
 num-traits = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
@@ -58,6 +59,13 @@ metal = [
     "candle-ug?/metal",
 ]
 ug = ["dep:candle-ug"]
+# Route CPU compute paths (matmul, reductions, quantized GEMM,
+# activations, elementwise) through the AdaWorldAPI/ndarray fork's
+# runtime SIMD dispatch (AVX-512 / AVX2 / NEON / scalar via LazyLock)
+# and hpc::* kernels (AMX matmul, VNNI int8, BF16 tile GEMM, etc.).
+# Mutually exclusive in practice with `mkl` / `accelerate` (the ndarray
+# fork takes priority when this feature is enabled).
+ndarray-simd = ["dep:ndarray"]
 
 [[bench]]
 name = "bench_main"
