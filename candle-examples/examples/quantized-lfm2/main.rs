@@ -1,3 +1,7 @@
+// `index_pos` is a manual KV-cache cursor advanced conditionally inside the
+// sampling loop; clippy's enumerate rewrite doesn't model that, so allow it.
+#![allow(clippy::explicit_counter_loop)]
+
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
