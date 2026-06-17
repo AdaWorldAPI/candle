@@ -19,7 +19,14 @@
 //! - [Paper](https://arxiv.org/abs/2510.14528)
 //! - [HuggingFace Model](https://huggingface.co/PaddlePaddle/PaddleOCR-VL)
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+// `seqlen_offset` in the generation loops is a manual KV-cache cursor captured
+// before `current_ids` is reassigned; clippy's enumerate/zip rewrite would read
+// the post-reassignment dim, so the manual counter is intentional.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::explicit_counter_loop
+)]
 
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::VarBuilder;

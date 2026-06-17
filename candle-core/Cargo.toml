@@ -24,6 +24,11 @@ intel-mkl-src = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 libm = { workspace = true }
 memmap2 = { workspace = true }
+# `AdaWorldAPI/ndarray` — HPC fork providing a three-tier bf16 tile GEMM
+# (AMX TDPBF16PS / AVX-512 VDPBF16PS / scalar). Optional; gated behind the
+# `ndarray-hpc` feature so the stock candle build is unaffected. Same pin as
+# burn's `burn-ndarray`.
+ndarray = { git = "https://github.com/AdaWorldAPI/ndarray", branch = "master", default-features = false, features = ["std"], optional = true }
 num-traits = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
@@ -49,6 +54,12 @@ cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
 cudnn = ["cuda", "cudarc/cudnn"]
 nccl = ["cuda", "cudarc/nccl"]
 mkl = ["dep:libc", "dep:intel-mkl-src"]
+# Add CPU bf16 matmul (unsupported by the default CPU backend) via the
+# AdaWorldAPI/ndarray fork's bf16 tile GEMM: AMX TDPBF16PS / AVX-512 VDPBF16PS /
+# scalar reference, all accumulating in f32 (FMA), no f32 round-trip of inputs.
+# f32/f16/f64 paths are untouched. NOTE: enabling this raises the build's MSRV to
+# rustc 1.95 (the fork's pinned toolchain). The stock candle build is unaffected.
+ndarray-hpc = ["dep:ndarray"]
 accelerate = ["dep:libc", "dep:accelerate-src"]
 metal = [
     "dep:objc2-metal",
