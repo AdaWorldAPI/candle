@@ -12,6 +12,7 @@ pub use utils::{
 };
 mod conv2d;
 use conv2d::Conv2D;
+mod hpc_dispatch;
 
 const USE_IM2COL_CONV1D: bool = true;
 const USE_COL2IM_CONV1D_TR: bool = true;
@@ -1366,6 +1367,10 @@ impl Map2 for MatMul {
 
         match T::DTYPE {
             DType::F16 | DType::F32 | DType::F64 => {}
+            // bf16 CPU matmul is normally unsupported here; the `ndarray-hpc`
+            // feature adds it via the fork's bf16 tile GEMM (handled below).
+            #[cfg(feature = "ndarray-hpc")]
+            DType::BF16 => {}
             _ => Err(Error::UnsupportedDTypeForOp(T::DTYPE, "matmul").bt())?,
         }
 
@@ -1410,6 +1415,36 @@ impl Map2 for MatMul {
             let lhs_p = &lhs[step * a_skip..];
             let rhs_p = &rhs[step * b_skip..];
             let dst_p = &mut dst[step * c_skip..];
+            // Opt-in BF16 tile-GEMM path (AdaWorldAPI/ndarray fork): native
+            // bf16×bf16 multiply with f32 `mul_add` (FMA) accumulation — AMX
+            // TDPBF16PS / AVX-512 VDPBF16PS / validated scalar reference, no
+            // f32 round-trip of the inputs. candle's CPU backend has no bf16
+            // matmul otherwise; gated on `ndarray-hpc`.
+            #[cfg(feature = "ndarray-hpc")]
+            if T::DTYPE == DType::BF16 {
+                // SAFETY: this branch implies `T == half::bf16`, which is
+                // `repr(transparent)` over `u16`, so the `*const u16`/`*mut u16`
+                // casts are valid; the pointers are live for the (m,k)/(k,n)/
+                // (m,n) shapes with candle's strides, and `dst_p` is a freshly
+                // allocated buffer disjoint from the inputs.
+                unsafe {
+                    hpc_dispatch::bf16_matmul_step(
+                        lhs_p.as_ptr() as *const u16,
+                        lhs_rs,
+                        lhs_cs,
+                        rhs_p.as_ptr() as *const u16,
+                        rhs_rs,
+                        rhs_cs,
+                        dst_p.as_mut_ptr() as *mut u16,
+                        dst_rs,
+                        dst_cs,
+                        m,
+                        n,
+                        k,
+                    );
+                }
+                continue;
+            }
             unsafe {
                 gemm(
                     /* m: usize = */ m,

@@ -144,3 +144,18 @@ test_device!(
 );
 test_device!(squeeze_mm, squeeze_mm_cpu, squeeze_mm_gpu, squeeze_mm_metal);
 test_device!(mm_layout, mm_layout_cpu, mm_layout_gpu, mm_layout_metal);
+
+// With the `ndarray-hpc` feature, candle's CPU backend gains bf16 matmul (via
+// the fork's bf16 tile GEMM). Without the feature, CPU bf16 matmul is
+// unsupported, so this test only exists under the feature. Inputs and result
+// are exactly representable in bf16, so the check is bit-exact on every host.
+#[cfg(feature = "ndarray-hpc")]
+#[test]
+fn matmul_bf16_cpu_hpc() -> Result<()> {
+    let dev = Device::Cpu;
+    let a = Tensor::from_slice(&[1f32, 2., 3., 4.], (2, 2), &dev)?.to_dtype(DType::BF16)?;
+    let b = Tensor::from_slice(&[1f32, 2., 3., 4.], (2, 2), &dev)?.to_dtype(DType::BF16)?;
+    let c = a.matmul(&b)?.to_dtype(DType::F32)?;
+    assert_eq!(c.to_vec2::<f32>()?, &[[7.0f32, 10.0], [15.0, 22.0]]);
+    Ok(())
+}
