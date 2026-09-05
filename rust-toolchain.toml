@@ -1,0 +1,9 @@
+# Bump log (append-only): the `channel` line below is the single source of
+# truth for the pinned version — a future bump edits that one line, not this
+# comment.
+#
+# - 2026-09-05: joins the workspace-wide 1.98.1 sweep.
+
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
